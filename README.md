@@ -39,7 +39,7 @@ sudo pacman -S ffmpeg python nodejs npm
 
 ```bash
 git clone https://github.com/ceoryn/Audiobook-Manager.git
-cd audiobook-manager
+cd Audiobook-Manager
 python3 -m venv .venv
 .venv/bin/pip install -e .
 cd web
@@ -95,7 +95,7 @@ to the clone, so the repository can live anywhere:
 
 ```bash
 git clone https://github.com/ceoryn/Audiobook-Manager.git
-cd audiobook-manager/web
+cd Audiobook-Manager/web
 npm install
 mkdir -p ~/.config/systemd/user
 mkdir -p ~/.config/audiobook-manager
