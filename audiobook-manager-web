@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$project_dir"
+PYTHONPATH=src python3 -m audiobook_manager web-api &
+api_pid=$!
+trap 'kill "$api_pid" 2>/dev/null || true' EXIT INT TERM
+cd web
+npm run dev

@@ -1,0 +1,13 @@
+[Unit]
+Description=Audiobook Manager local API
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/audiobook-manager/service.env
+ExecStart=/usr/bin/bash -lc 'cd "$${AUDIOBOOK_MANAGER_PROJECT}" && exec env PYTHONPATH=src python3 -m audiobook_manager web-api --database library-state.sqlite3 --config audiobook-manager.json --prefer-latin-metadata --host 127.0.0.1 --port 8788'
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

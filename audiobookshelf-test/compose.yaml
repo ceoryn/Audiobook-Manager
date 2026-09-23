@@ -1,0 +1,18 @@
+name: audiobook-manager-test
+
+services:
+  audiobookshelf:
+    image: ghcr.io/advplyr/audiobookshelf:latest
+    container_name: audiobook-manager-audiobookshelf
+    user: "${AUDIOBOOKSHELF_UID:-1000}:${AUDIOBOOKSHELF_GID:-1000}"
+    ports:
+      - "127.0.0.1:13378:80"
+    volumes:
+      - ./runtime/config:/config
+      - ./runtime/metadata:/metadata
+      - ${AUDIOBOOK_LIBRARY:?Set AUDIOBOOK_LIBRARY in .env}:/audiobooks:ro
+      - ./runtime/hidden:/audiobooks/_quarantine:ro
+      - ./runtime/hidden:/audiobooks/_metadata_review:ro
+    environment:
+      TZ: ${TZ:-UTC}
+    restart: unless-stopped

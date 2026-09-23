@@ -1,0 +1,14 @@
+[Unit]
+Description=Audiobook Manager local dashboard
+After=network-online.target audiobook-manager-api.service
+Wants=audiobook-manager-api.service
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/audiobook-manager/service.env
+ExecStart=/usr/bin/bash -lc 'cd "$${AUDIOBOOK_MANAGER_PROJECT}/web" && exec npm run dev -- --host 127.0.0.1 --port 3000'
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
