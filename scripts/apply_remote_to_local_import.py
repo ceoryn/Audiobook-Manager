@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Resume an approved, staged Goliath-to-Jupiter M4B import without overwrites.
+"""Resume an approved, staged remote-to-local M4B import without overwrites.
 
 Without --approved this command prints a summary and changes nothing. It only
-accepts proposed_copy_to_jupiter records from a reviewed dry-run plan.
+accepts proposed_copy_to_destination records from a reviewed dry-run plan.
 """
 
 from __future__ import annotations
@@ -36,10 +36,10 @@ expected_size = int(sys.argv[3])
 expected_mtime = int(sys.argv[4])
 path = (root / relative).resolve()
 if not path.is_relative_to(root) or not path.is_file():
-    raise SystemExit('source path is unavailable or escapes Goliath root')
+    raise SystemExit('source path is unavailable or escapes the remote root')
 before = path.stat()
 if before.st_size != expected_size or before.st_mtime_ns != expected_mtime:
-    raise SystemExit('Goliath source fingerprint changed before copy')
+    raise SystemExit('remote source fingerprint changed before copy')
 digest = hashlib.sha256()
 sent = 0
 with path.open('rb') as reader:
@@ -51,13 +51,10 @@ sys.stdout.buffer.flush()
 after = path.stat()
 if (sent != expected_size or after.st_size != expected_size or
         after.st_mtime_ns != expected_mtime):
-    raise SystemExit('Goliath source changed during copy')
+    raise SystemExit('remote source changed during copy')
 print(json.dumps({'sha256': digest.hexdigest(), 'size': sent,
                   'mtime_ns': after.st_mtime_ns}), file=sys.stderr)
 """
-
-RESERVE_BYTES = 100 * 2**30
-
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -77,14 +74,14 @@ def save_json_atomic(path: Path, value: dict[str, Any]) -> None:
 def validated_paths(plan: dict[str, Any], item: dict[str, Any], root: Path) -> tuple[str, Path]:
     relative = PurePosixPath(item["remote_source"])
     if relative.is_absolute() or not relative.parts or ".." in relative.parts:
-        raise ValueError("unsafe relative Goliath source path")
-    target = Path(item["jupiter_destination"])
+        raise ValueError("unsafe relative remote source path")
+    target = Path(item["destination_path"])
     if target.suffix.casefold() != ".m4b" or not target.is_absolute():
-        raise ValueError("Jupiter destination must be an absolute M4B path")
+        raise ValueError("destination must be an absolute M4B path")
     if not target.resolve().is_relative_to(root.resolve()):
-        raise ValueError("Jupiter destination escapes audiobook root")
-    if str(root.resolve()) != str(Path(plan["jupiter_root"]).resolve()):
-        raise ValueError("Jupiter root does not match the approved plan")
+        raise ValueError("destination escapes the configured audiobook root")
+    if str(root.resolve()) != str(Path(plan["destination_root"]).resolve()):
+        raise ValueError("destination root does not match the approved plan")
     fingerprint = item["source_fingerprint"]
     if (fingerprint.get("path") != relative.as_posix() or
             fingerprint.get("size") != item["source_bytes"] or
@@ -131,17 +128,17 @@ def copy_and_verify(plan: dict[str, Any], item: dict[str, Any], stage: Path,
             if process.stderr is not None:
                 process.stderr.close()
     if status:
-        raise RuntimeError(f"Goliath copy failed: {stderr[-1000:]}")
+        raise RuntimeError(f"remote copy failed: {stderr[-1000:]}")
     try:
         result = json.loads(stderr.splitlines()[-1])
     except (IndexError, ValueError) as exc:
-        raise RuntimeError(f"Goliath checksum response missing: {stderr[-1000:]}") from exc
+        raise RuntimeError(f"remote checksum response missing: {stderr[-1000:]}") from exc
     if copied != item["source_bytes"] or result.get("size") != copied:
         raise ValueError("copy size differs from approved source size")
     if result.get("sha256") != digest.hexdigest():
-        raise ValueError("remote and Jupiter SHA-256 checksums differ")
+        raise ValueError("remote and destination SHA-256 checksums differ")
     if result.get("mtime_ns") != item["source_fingerprint"]["mtime_ns"]:
-        raise ValueError("Goliath source modification time changed")
+        raise ValueError("remote source modification time changed")
     probe = probe_media(stage)
     actual = probe.duration_seconds or 0
     expected = item["duration_seconds"]
@@ -169,21 +166,24 @@ def publish(stage: Path, target: Path) -> None:
 def run(plan: dict[str, Any], root: Path, stage_root: Path, ledger_path: Path,
         control_socket: Path, known_hosts: Path, *, max_books: int | None = None) -> dict[str, int]:
     if not root.is_dir() or not root.parent.is_mount():
-        raise ValueError("Jupiter mount and audiobook root must be present")
+        raise ValueError("destination filesystem and audiobook root must be present")
     if os.statvfs(root).f_flag & os.ST_RDONLY:
-        raise ValueError("Jupiter is mounted read-only; no import can start")
+        raise ValueError("destination is mounted read-only; no import can start")
     if stage_root.exists() and (stage_root.is_symlink() or
                                 stage_root.stat().st_dev != root.stat().st_dev):
         raise ValueError("staging root is unsafe or on a different filesystem")
     if not stage_root.resolve().is_relative_to(root.parent.resolve()):
-        raise ValueError("staging root escapes Jupiter mount")
+        raise ValueError("staging root escapes the destination filesystem")
     if not control_socket.exists() or not known_hosts.is_file():
         raise ValueError("SSH control socket or pinned known-hosts file is unavailable")
     stage_root.mkdir(parents=True, exist_ok=True)
     ledger = json.loads(ledger_path.read_text()) if ledger_path.exists() else {}
     if not isinstance(ledger, dict):
         raise ValueError("import ledger must be a JSON object")
-    selected = [item for item in plan["operations"] if item["action"] == "proposed_copy_to_jupiter"]
+    reserve_bytes = (plan.get("summary") or {}).get("reserve_bytes")
+    if isinstance(reserve_bytes, bool) or not isinstance(reserve_bytes, int) or reserve_bytes < 0:
+        raise ValueError("approved plan has an invalid destination reserve")
+    selected = [item for item in plan["operations"] if item["action"] == "proposed_copy_to_destination"]
     counts: Counter[str] = Counter()
     for number, item in enumerate(selected, 1):
         if max_books is not None and counts["copied"] >= max_books:
@@ -197,7 +197,7 @@ def run(plan: dict[str, Any], root: Path, stage_root: Path, ledger_path: Path,
             counts["held_existing_target"] += 1
             print(f"[{number}/{len(selected)}] Held (target exists): {target}", flush=True)
             continue
-        if shutil.disk_usage(root).free - item["source_bytes"] < RESERVE_BYTES:
+        if shutil.disk_usage(root).free - item["source_bytes"] < reserve_bytes:
             counts["held_low_space"] += 1
             print(f"[{number}/{len(selected)}] Held (low disk space): {target}", flush=True)
             break
@@ -227,24 +227,24 @@ def run(plan: dict[str, Any], root: Path, stage_root: Path, ledger_path: Path,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plan", type=Path, required=True)
-    parser.add_argument("--jupiter-root", type=Path, required=True)
+    parser.add_argument("--destination-root", type=Path, required=True)
     parser.add_argument("--control-socket", type=Path, required=True)
     parser.add_argument("--known-hosts", type=Path, required=True)
     parser.add_argument("--ledger", type=Path,
-                        default=Path("reports/goliath-to-jupiter-import-ledger.json"))
+                        default=Path("reports/remote-to-local-import-ledger.json"))
     parser.add_argument("--max-books", type=int, help="Stop after this many newly copied books")
     parser.add_argument("--approved", action="store_true")
     args = parser.parse_args()
     plan = json.loads(args.plan.read_text())
     if plan.get("mode") != "dry_run_no_media_writes":
-        parser.error("expected a dry-run Goliath-to-Jupiter plan")
-    count = sum(item["action"] == "proposed_copy_to_jupiter" for item in plan["operations"])
+        parser.error("expected a dry-run remote-to-local plan")
+    count = sum(item["action"] == "proposed_copy_to_destination" for item in plan["operations"])
     if not args.approved:
         print(f"Dry run only: {count} proposed copies. No media changed.")
         return
     if args.max_books is not None and args.max_books < 1:
         parser.error("--max-books must be positive")
-    root = args.jupiter_root.resolve()
+    root = args.destination_root.resolve()
     stage_root = root.parent / ".audiobook-manager-staging"
     lock_path = args.ledger.with_suffix(args.ledger.suffix + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -252,7 +252,7 @@ def main() -> None:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise SystemExit("another Goliath-to-Jupiter import is running") from exc
+            raise SystemExit("another remote-to-local import is running") from exc
         result = run(plan, root, stage_root, args.ledger, args.control_socket,
                      args.known_hosts, max_books=args.max_books)
         print(json.dumps({"result": result, "ledger": str(args.ledger)}, indent=2))

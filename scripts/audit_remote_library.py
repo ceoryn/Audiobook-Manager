@@ -247,7 +247,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def markdown(report: dict[str, Any]) -> str:
-    lines = ["# Goliath audiobook reconciliation", "", report["generated_at"], "",
+    lines = ["# Remote audiobook reconciliation", "", report["generated_at"], "",
              "Read-only dry run. No media copied or modified.", "", "## Summary", ""]
     lines += [f"- {key.replace('_', ' ')}: {value}" for key, value in
               report["summary"].items() if key not in {"book_classifications",

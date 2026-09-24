@@ -17,19 +17,19 @@ from scripts.plan_remote_library_import import (
 class RemoteImportPlanTests(unittest.TestCase):
     def test_identity_checks_are_conservative(self) -> None:
         self.assertTrue(source_title_matches(
-            "Columbus Day", "Books/Columbus Day [B01N48VJFJ]/"
-            "Columbus Day꞉ Expeditionary Force, Book 1 [B01N48VJFJ].m4b"))
+            "Example Mission", "Books/Example Mission [B000000001]/"
+            "Example Mission꞉ Sample Series, Book 1 [B000000001].m4b"))
         self.assertFalse(source_title_matches(
-            "Different Book", "Books/Columbus Day [B01N48VJFJ]/"
-            "Columbus Day [B01N48VJFJ].m4b"))
-        self.assertTrue(author_matches(["B. V. Larson"], "B.V. Larson"))
-        self.assertFalse(author_matches(["D. J. Molles"], "B. V. Larson"))
+            "Different Book", "Books/Example Mission [B000000001]/"
+            "Example Mission [B000000001].m4b"))
+        self.assertTrue(author_matches(["A. B. Example"], "A.B. Example"))
+        self.assertFalse(author_matches(["C. D. Writer"], "A. B. Example"))
         self.assertTrue(runtime_matches(600, 600 * 60 + 300))
         self.assertFalse(runtime_matches(600, 450 * 60))
-        self.assertEqual(["Timothy Zahn/Last Command.m4b"], similar_existing_title(
-            "Star Wars: The Thrawn Trilogy, Book 3: The Last Command", "Timothy Zahn",
-            [{"author": "timothy zahn", "titles": ["star wars the thrawn trilogy the last command"],
-              "path": "Timothy Zahn/Last Command.m4b"}]))
+        self.assertEqual(["Example Writer/Final Example.m4b"], similar_existing_title(
+            "Example Saga: Final Example", "Example Writer",
+            [{"author": "example writer", "titles": ["example saga final example"],
+              "path": "Example Writer/Final Example.m4b"}]))
 
     def test_plan_never_copies_conflict_or_unverified_group(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

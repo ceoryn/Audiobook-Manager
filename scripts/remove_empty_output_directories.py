@@ -16,6 +16,27 @@ from pathlib import Path
 from typing import Any
 
 
+def empty_output_directories(output_root: Path) -> list[dict[str, Any]]:
+    """Return empty, non-internal output directories without modifying them."""
+    output_root = output_root.resolve()
+    rows: list[dict[str, Any]] = []
+    for directory in sorted(output_root.rglob("*"), key=lambda path: str(path).casefold()):
+        if not directory.is_dir():
+            continue
+        relative = directory.relative_to(output_root)
+        if not relative.parts or relative.parts[0].startswith("_"):
+            continue
+        if any(directory.iterdir()):
+            continue
+        rows.append({
+            "path": str(directory.resolve()),
+            "relative_path": str(relative),
+            "author_folder": relative.parts[0],
+            "depth": len(relative.parts),
+        })
+    return rows
+
+
 def _safe_candidate(path: Path, output_root: Path) -> bool:
     try:
         relative = path.resolve().relative_to(output_root)
