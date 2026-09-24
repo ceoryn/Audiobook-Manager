@@ -26,7 +26,7 @@ from scripts.audit_remote_library import active_outputs, classify, normalized
 
 
 ASIN = re.compile(r"\[([A-Z0-9]{10})\]", re.I)
-RESERVE_BYTES = 40 * 2**30
+DEFAULT_RESERVE_BYTES = 10 * 2**30
 
 
 def compact(value: object) -> str:
@@ -213,7 +213,10 @@ def propose(item: dict[str, Any], output_root: Path, outputs: list[dict[str, Any
 
 def build_plan(reconciliation: dict[str, Any], output_root: Path,
                cache: dict[str, dict[str, Any]], cache_path: Path,
-               *, online: bool, free_bytes: int) -> dict[str, Any]:
+               *, online: bool, free_bytes: int,
+               reserve_bytes: int = DEFAULT_RESERVE_BYTES) -> dict[str, Any]:
+    if reserve_bytes < 0:
+        raise ValueError("reserve bytes cannot be negative")
     outputs = active_outputs(output_root)
     operations = [propose(item, output_root, outputs, cache, cache_path, online=online)
                   for item in reconciliation["books"]]
@@ -230,10 +233,13 @@ def build_plan(reconciliation: dict[str, Any], output_root: Path,
     proposed = [item for item in operations if item["action"] == "proposed_copy"]
     proposed_bytes = sum(item["source_bytes"] for item in proposed)
     largest = max((item["source_bytes"] for item in proposed), default=0)
-    if free_bytes - proposed_bytes - largest < RESERVE_BYTES:
+    if free_bytes - proposed_bytes - largest < reserve_bytes:
         for item in proposed:
             item["action"] = "defer_disk_budget"
-            item["reason"] = "Whole proposed batch does not preserve a 40 GiB reserve plus staging"
+            item["reason"] = (
+                f"Whole proposed batch does not preserve the configured "
+                f"{reserve_bytes / 2**30:g} GiB reserve plus staging"
+            )
     counts = Counter(item["action"] for item in operations)
     bytes_by_action: Counter[str] = Counter()
     for item in operations:
@@ -245,12 +251,12 @@ def build_plan(reconciliation: dict[str, Any], output_root: Path,
             "output_root": str(output_root),
             "metadata_source": "Audnexus ASIN lookup (cached)",
             "summary": {"actions": dict(counts), "bytes_by_action": dict(bytes_by_action),
-                        "free_bytes_at_plan": free_bytes, "reserve_bytes": RESERVE_BYTES,
+                        "free_bytes_at_plan": free_bytes, "reserve_bytes": reserve_bytes,
                         "largest_staging_bytes": largest},
             "operations": operations,
             "execution_requirements": [
                 "Show this plan and obtain explicit approval before copying any book.",
-                "Treat remote and Jupiter source as read-only; never delete or overwrite them.",
+                "Treat the remote library and local source library as read-only; never alter them.",
                 "Before each copy, recheck source size/mtime, destination absence and free space.",
                 "Stage in output filesystem, verify checksum, audio stream, duration, chapters and identity, then move atomically.",
                 "Retag only the staged copy using verified metadata; retain an import provenance manifest for resumability.",
@@ -259,7 +265,7 @@ def build_plan(reconciliation: dict[str, Any], output_root: Path,
 
 def markdown(plan: dict[str, Any]) -> str:
     summary = plan["summary"]
-    lines = ["# Goliath import plan — dry run", "", plan["generated_at"], "",
+    lines = ["# Remote library import plan — dry run", "", plan["generated_at"], "",
              "No audiobook media has been copied, modified or removed.", "",
              "## Storage", "",
              f"- Free now: {summary['free_bytes_at_plan'] / 2**30:.1f} GiB",
@@ -300,14 +306,21 @@ def main() -> None:
     parser.add_argument("--cache", type=Path, default=Path("reports/remote-audnexus-cache.json"))
     parser.add_argument("--report-dir", type=Path, default=Path("reports"))
     parser.add_argument("--lookup-asins", action="store_true", help="Perform optional rate-limited Audnexus requests")
+    parser.add_argument(
+        "--reserve-gib", type=float, default=10.0,
+        help="Free space to preserve on the output filesystem (default: 10 GiB)",
+    )
     args = parser.parse_args()
     reconciliation = json.loads(args.reconciliation.read_text())
     output = args.output_root.resolve()
     if not output.is_dir():
         parser.error("output root must exist")
+    if args.reserve_gib < 0:
+        parser.error("--reserve-gib cannot be negative")
     cache = load_cache(args.cache)
     plan = build_plan(reconciliation, output, cache, args.cache,
-                      online=args.lookup_asins, free_bytes=shutil.disk_usage(output).free)
+                      online=args.lookup_asins, free_bytes=shutil.disk_usage(output).free,
+                      reserve_bytes=round(args.reserve_gib * 2**30))
     args.report_dir.mkdir(parents=True, exist_ok=True)
     base = args.report_dir / f"remote-library-import-plan-{datetime.now():%Y-%m-%d-%H%M%S}"
     base.with_suffix(".json").write_text(json.dumps(plan, indent=2, ensure_ascii=False) + "\n")

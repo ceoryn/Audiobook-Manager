@@ -12,17 +12,17 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from audiobook_manager.probe import probe_media
-from scripts.apply_goliath_to_jupiter_import import (
+from scripts.apply_remote_to_local_import import (
     already_imported,
     copy_and_verify,
     publish,
     run,
     validated_paths,
 )
-from scripts.plan_goliath_to_jupiter_import import build_plan
+from scripts.plan_remote_to_local_import import build_plan
 
 
-class GoliathToJupiterPlanTests(unittest.TestCase):
+class RemoteToLocalPlanTests(unittest.TestCase):
     def test_organized_path_and_existing_asin_hold(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -38,10 +38,10 @@ class GoliathToJupiterPlanTests(unittest.TestCase):
                                "destination": "/output/Example.m4b"}]}
             plan = build_plan(remote_plan, root, [], [], free_bytes=200 * 2**30)
             book = plan["operations"][0]
-            self.assertEqual("proposed_copy_to_jupiter", book["action"])
+            self.assertEqual("proposed_copy_to_destination", book["action"])
             self.assertEqual(root / "Example Writer" / "Example Series" / "01 - Example" /
                              "Example Writer - Example [B000000001].m4b",
-                             Path(book["jupiter_destination"]))
+                             Path(book["destination_path"]))
             held = build_plan(remote_plan, root, ["elsewhere/Book [B000000001].m4b"], [],
                               free_bytes=200 * 2**30)
             self.assertEqual("review_existing_asin", held["operations"][0]["action"])
@@ -50,8 +50,8 @@ class GoliathToJupiterPlanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             operations = []
-            for asin, author, title in (("B000000001", "B.V. Larson", "First"),
-                                        ("B000000002", "B. V. Larson", "Second")):
+            for asin, author, title in (("B000000001", "A.B. Example", "First"),
+                                        ("B000000002", "A. B. Example", "Second")):
                 source = f"Books/{title} [{asin}]/{title} [{asin}].m4b"
                 operations.append({"action": "proposed_copy", "source_files": [source],
                                    "source_fingerprints": [{"path": source, "size": 100, "mtime_ns": 1}],
@@ -61,29 +61,29 @@ class GoliathToJupiterPlanTests(unittest.TestCase):
             plan = build_plan({"generated_at": "fixture", "remote_host": "fixture",
                                "remote_root": "/remote", "operations": operations},
                               root, [], [], free_bytes=200 * 2**30)
-            authors = {Path(item["jupiter_destination"]).relative_to(root).parts[0]
+            authors = {Path(item["destination_path"]).relative_to(root).parts[0]
                        for item in plan["operations"]}
-            self.assertEqual({"B. V. Larson"}, authors)
+            self.assertEqual({"A. B. Example"}, authors)
 
     def test_rejects_unsafe_source_and_destination(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            plan = {"jupiter_root": str(root)}
+            plan = {"destination_root": str(root)}
             item = {"remote_source": "../elsewhere.m4b",
-                    "jupiter_destination": str(root / "book.m4b"),
+                    "destination_path": str(root / "book.m4b"),
                     "source_fingerprint": {"path": "../elsewhere.m4b", "size": 5, "mtime_ns": 1},
                     "source_bytes": 5}
             with self.assertRaises(ValueError):
                 validated_paths(plan, item, root)
             item["remote_source"] = "book.m4b"
             item["source_fingerprint"]["path"] = "book.m4b"
-            item["jupiter_destination"] = str(root.parent / "outside.m4b")
+            item["destination_path"] = str(root.parent / "outside.m4b")
             with self.assertRaises(ValueError):
                 validated_paths(plan, item, root)
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
-class GoliathToJupiterCopyTests(unittest.TestCase):
+class RemoteToLocalCopyTests(unittest.TestCase):
     def test_stream_checksum_probe_and_atomic_no_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -103,7 +103,7 @@ class GoliathToJupiterCopyTests(unittest.TestCase):
                 "print(json.dumps({'sha256':hashlib.sha256(data).hexdigest(),"
                 "'size':len(data),'mtime_ns':int(sys.argv[2])}),file=sys.stderr)"
             )
-            with patch("scripts.apply_goliath_to_jupiter_import.remote_command",
+            with patch("scripts.apply_remote_to_local_import.remote_command",
                        return_value=[sys.executable, "-c", code, str(source), str(stat.st_mtime_ns)]):
                 digest = copy_and_verify(plan, item, stage, "generated.m4b",
                                          root / "socket", root / "hosts")
@@ -133,11 +133,12 @@ class GoliathToJupiterCopyTests(unittest.TestCase):
             ledger = base / "ledger.json"
             target = root / "Example" / "Example [B000000001].m4b"
             fingerprint = {"path": "Books/Example.m4b", "size": 6, "mtime_ns": 1}
-            item = {"action": "proposed_copy_to_jupiter", "remote_source": fingerprint["path"],
+            item = {"action": "proposed_copy_to_destination", "remote_source": fingerprint["path"],
                     "source_fingerprint": fingerprint, "source_bytes": 6,
-                    "jupiter_destination": str(target), "asin": "B000000001",
+                    "destination_path": str(target), "asin": "B000000001",
                     "metadata": {"title": "Example"}}
-            plan = {"jupiter_root": str(root), "operations": [item]}
+            plan = {"destination_root": str(root), "summary": {"reserve_bytes": 0},
+                    "operations": [item]}
             digest = hashlib.sha256(b"sample").hexdigest()
 
             def fake_copy(_plan, _item, stage, _relative, _socket, _hosts):
@@ -145,9 +146,9 @@ class GoliathToJupiterCopyTests(unittest.TestCase):
                 return digest
 
             with patch("pathlib.Path.is_mount", return_value=True), \
-                 patch("scripts.apply_goliath_to_jupiter_import.shutil.disk_usage",
+                 patch("scripts.apply_remote_to_local_import.shutil.disk_usage",
                        return_value=SimpleNamespace(free=200 * 2**30)), \
-                 patch("scripts.apply_goliath_to_jupiter_import.copy_and_verify",
+                 patch("scripts.apply_remote_to_local_import.copy_and_verify",
                        side_effect=fake_copy) as mocked:
                 first = run(plan, root, stage_root, ledger, socket, hosts)
                 second = run(plan, root, stage_root, ledger, socket, hosts)

@@ -10,8 +10,10 @@ from pathlib import Path
 
 from audiobook_manager.probe import probe_media
 from scripts.apply_chapter_split_repair import apply_plan
-from scripts.finalize_chapter_split_repair import empty_output_directories
-from scripts.remove_empty_output_directories import remove_empty_directories
+from scripts.remove_empty_output_directories import (
+    empty_output_directories,
+    remove_empty_directories,
+)
 from scripts.plan_chapter_split_repair import (
     chapter_repairs,
     file_record,
@@ -24,19 +26,22 @@ class ChapterSplitPlannerTests(unittest.TestCase):
     def test_empty_directory_audit_excludes_internal_repair_folders(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            (root / "David Eddings" / "Empty Book").mkdir(parents=True)
-            (root / "David Eddings" / "Full Book").mkdir(parents=True)
-            (root / "David Eddings" / "Full Book" / "book.m4b").write_bytes(b"audio")
+            (root / "Example Writer" / "Empty Book").mkdir(parents=True)
+            (root / "Example Writer" / "Full Book").mkdir(parents=True)
+            (root / "Example Writer" / "Full Book" / "book.m4b").write_bytes(b"audio")
             (root / "_quarantine" / "Empty").mkdir(parents=True)
             rows = empty_output_directories(root)
-            self.assertEqual(["David Eddings/Empty Book"], [row["relative_path"] for row in rows])
+            self.assertEqual(
+                ["Example Writer/Empty Book"],
+                [row["relative_path"] for row in rows],
+            )
 
     def test_empty_directory_cleanup_prunes_parents_but_never_internal_trees(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            empty = root / "David Eddings" / "Series" / "Empty Book"
+            empty = root / "Example Writer" / "Series" / "Empty Book"
             empty.mkdir(parents=True)
-            full = root / "David Eddings" / "Full Book"
+            full = root / "Example Writer" / "Full Book"
             full.mkdir(parents=True)
             (full / "book.m4b").write_bytes(b"audio")
             internal = root / "_quarantine" / "Empty"
@@ -44,7 +49,7 @@ class ChapterSplitPlannerTests(unittest.TestCase):
             result = remove_empty_directories(output_root=root, audited_paths=[empty])
             self.assertEqual(2, result["directories_removed"])
             self.assertFalse(empty.exists())
-            self.assertFalse((root / "David Eddings" / "Series").exists())
+            self.assertFalse((root / "Example Writer" / "Series").exists())
             self.assertTrue(full.is_dir())
             self.assertTrue(internal.is_dir())
             self.assertEqual([], result["remaining_empty_directories"])

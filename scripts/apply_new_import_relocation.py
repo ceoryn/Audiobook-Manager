@@ -11,23 +11,23 @@ from pathlib import Path
 from typing import Any
 
 from audiobook_manager.display import person_key
-from scripts.apply_goliath_to_jupiter_import import save_json_atomic, sha256_file
+from scripts.apply_remote_to_local_import import save_json_atomic, sha256_file
 
 
 def apply(plan: dict[str, Any], ledger_path: Path) -> dict[str, Any]:
     if plan.get("mode") != "dry-run":
         raise ValueError("expected a reviewed dry-run relocation plan")
-    root = Path(plan["jupiter_root"]).resolve()
+    root = Path(plan["destination_root"]).resolve()
     source = Path(plan["source"])
     target = Path(plan["destination"])
     if not root.is_dir() or not root.parent.is_mount():
-        raise ValueError("Jupiter mount is not present")
+        raise ValueError("destination filesystem is not present")
     if os.statvfs(root).f_flag & os.ST_RDONLY:
-        raise ValueError("Jupiter is mounted read-only")
+        raise ValueError("destination is mounted read-only")
     if (not source.is_absolute() or not target.is_absolute() or
             not source.resolve().is_relative_to(root) or
             not target.resolve().is_relative_to(root)):
-        raise ValueError("source or destination escapes Jupiter audiobook root")
+        raise ValueError("source or destination escapes the configured audiobook root")
     source_parts = source.relative_to(root).parts
     target_parts = target.relative_to(root).parts
     if person_key(source_parts[0]) != person_key(target_parts[0]):
