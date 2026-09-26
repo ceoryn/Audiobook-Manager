@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from scripts.remove_empty_output_directories import remove_empty_directories
+
 ART = {".jpg", ".jpeg", ".png", ".webp"}
 
 
@@ -44,6 +46,7 @@ def apply(plan: dict[str, Any], log_path: Path) -> dict[str, Any]:
     result: dict[str, Any] = {"mode": "applied", "source_writes": 0,
                               "files_deleted": 0, "archived": [], "removed_empty": [],
                               "skipped": [], "archive": str(archive)}
+    empty_candidates = [Path(item["path"]) for item in plan["empty_directories"]]
 
     def log() -> None:
         temporary = log_path.with_suffix(".tmp")
@@ -73,22 +76,14 @@ def apply(plan: dict[str, Any], log_path: Path) -> dict[str, Any]:
         log()
         source.rename(destination)
         result["archived"].append(str(relative))
+        # These parents may have become empty after an approved artwork move.
+        empty_candidates.extend(
+            parent for parent in source.parents if parent != root and root in parent.parents
+        )
         result.pop("pending_move", None)
         log()
-    # rmdir atomically refuses any folder that contains even a hidden file.
-    for directory, dirs, files in os.walk(root, topdown=False, followlinks=False):
-        path = Path(directory)
-        relative = path.relative_to(root)
-        if not relative.parts or any(p.startswith(("_", ".")) for p in relative.parts):
-            continue
-        if path.is_symlink() or path.resolve() != path:
-            continue
-        try:
-            path.rmdir()
-        except OSError:
-            continue
-        result["removed_empty"].append(str(relative))
-        log()
+    cleanup = remove_empty_directories(output_root=root, audited_paths=empty_candidates)
+    result["removed_empty"] = [item["relative_path"] for item in cleanup["removed"]]
     result["remaining"] = inventory(root)["summary"]
     log()
     return result
@@ -113,6 +108,7 @@ def main() -> None:
         plan = inventory(args.output_root)
         plan["stamp"] = datetime.now().strftime("%Y-%m-%d-%H%M%S")
         target = Path("reports") / f"output-folders-{plan['stamp']}.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(plan, indent=2) + "\n")
         print(json.dumps({"report": str(target), **plan["summary"]}, indent=2))
 

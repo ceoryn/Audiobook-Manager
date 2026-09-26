@@ -8,9 +8,11 @@ import json
 from pathlib import Path
 
 from scripts.apply_remote_to_local_import import sha256_file
+from scripts.remote_import_plan import validate_plan
 
 
 def verify(plan: dict, ledger: dict, root: Path) -> dict:
+    validate_plan(plan, root)
     expected = [item for item in plan["operations"]
                 if item["action"] == "proposed_copy_to_destination"]
     by_source: dict[str, list[tuple[Path, dict]]] = {}

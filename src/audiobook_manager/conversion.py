@@ -12,6 +12,18 @@ from urllib.request import Request, urlopen
 
 from .probe import ProbeError, media_input_args, probe_media
 from .output import approved_cover_url
+from .configuration import require_outside_source
+
+
+def _conversion_roots(library_root: Path, output_root: Path) -> tuple[Path, Path]:
+    library_root = library_root.expanduser().resolve()
+    output_root = output_root.expanduser().resolve()
+    if not library_root.is_dir():
+        raise ValueError("source library does not exist")
+    require_outside_source(output_root, library_root, purpose="conversion output")
+    # Archive imports use disposable extracted inputs under the output tree.
+    # Their final destination must still be outside that input directory.
+    return library_root, output_root
 
 
 def _safe_name(value: str) -> str:
@@ -30,8 +42,9 @@ def _sha256(path: Path) -> str:
 def copy_verified_m4b(*, source: Path, library_root: Path, output_root: Path,
                       destination: Path) -> Path:
     """Create a byte-identical, validated copy without modifying the source."""
-    source, library_root = source.resolve(), library_root.resolve()
-    output_root, destination = output_root.resolve(), destination.resolve()
+    library_root, output_root = _conversion_roots(library_root, output_root)
+    source, destination = source.resolve(), destination.resolve()
+    require_outside_source(destination, library_root, purpose="copy destination")
     try:
         source.relative_to(library_root)
         destination.relative_to(output_root)
@@ -64,7 +77,7 @@ def copy_verified_m4b(*, source: Path, library_root: Path, output_root: Path,
 def convert_to_m4b(*, inputs: list[Path], library_root: Path, output_root: Path,
                    metadata: dict[str, Any], overwrite: bool = False,
                    destination: Path | None = None, copy_audio: bool = False) -> Path:
-    library_root, output_root = library_root.resolve(), output_root.resolve()
+    library_root, output_root = _conversion_roots(library_root, output_root)
     if not inputs:
         raise ValueError("conversion needs at least one input")
     resolved = [path.resolve() for path in inputs]
@@ -75,16 +88,17 @@ def convert_to_m4b(*, inputs: list[Path], library_root: Path, output_root: Path,
             raise ValueError(f"input is outside the source library: {path}") from exc
         if not path.is_file():
             raise ValueError(f"input does not exist: {path}")
-    output_root.mkdir(parents=True, exist_ok=True)
     title = str(metadata.get("title") or "Untitled").strip()
     author = ", ".join(metadata.get("authors") or [])
     destination = destination.resolve() if destination else output_root / f"{_safe_name(f'{author} - {title}' if author else title)}.m4b"
+    require_outside_source(destination, library_root, purpose="conversion destination")
     try:
         destination.relative_to(output_root)
     except ValueError as exc:
         raise ValueError("destination must remain inside output root") from exc
     if destination.exists() and not overwrite:
         raise FileExistsError(f"output already exists: {destination}")
+    output_root.mkdir(parents=True, exist_ok=True)
     probes = [probe_media(path) for path in resolved]
     with tempfile.TemporaryDirectory(prefix="audiobook-manager-", dir=output_root) as temp_dir:
         temp = Path(temp_dir)

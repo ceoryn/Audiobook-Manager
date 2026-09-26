@@ -141,6 +141,32 @@ The local folder browser is intentionally served only through the localhost API.
 lists directories, not audiobook contents, and configuration changes are disabled
 while processing is active.
 
+The API accepts requests from the local dashboard and rejects foreign browser
+origins and hostnames. It cannot bind to a public network address. Database and
+configuration files must be stored outside the source library.
+
+### Repair and import scripts
+
+Run repository utilities as modules from the clone root, for example
+`PYTHONPATH=src python3 -m scripts.plan_remote_to_local_import --help`.
+The remote importer accepts nested destination folders on any mounted local
+filesystem. Its version 2 plans record the destination device and reserve space;
+execution rejects a changed or unavailable device. Older, unversioned import plans
+must be regenerated with the current planner and reviewed before execution. Keep
+existing provenance ledgers: their format has not changed.
+
+Empty-folder cleanup defaults to a preview:
+
+```bash
+PYTHONPATH=src python3 -m scripts.remove_empty_output_directories --audit /path/to/audit.json
+# After reviewing the listed folders:
+PYTHONPATH=src python3 -m scripts.remove_empty_output_directories --audit /path/to/audit.json --approved
+```
+
+Only audited empty folders and parents made empty by their removal are pruned.
+Symbolic links, internal folders, and unrelated folders created since the audit
+are preserved. Audiobook media is never removed by this utility.
+
 ## Development
 
 Run the Python test suite:

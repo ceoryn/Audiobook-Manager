@@ -10,6 +10,7 @@ from pathlib import Path
 from collections.abc import Callable
 
 from .database import StateDatabase
+from .configuration import require_outside_source, validate_library_paths
 from .detection import detect_books
 from .reconcile import reconcile_group
 from .hints import extract_hint
@@ -97,9 +98,8 @@ def discover_run(source: Path, destination: Path, database_path: Path, *, worker
                  identify: bool = False, metadata_threshold: int = 80,
                  prefer_latin_metadata: bool = False,
                  checkpoint: Callable[[], None] | None = None) -> int:
-    source, destination = source.resolve(), destination.resolve()
-    if source == destination or source in destination.parents or destination in source.parents:
-        raise ValueError("source and destination must be separate, non-nested directories")
+    source, destination = validate_library_paths(source, destination)
+    require_outside_source(database_path, source, purpose="state database")
     with StateDatabase(database_path) as database:
         run_id = database.resumable_process_run(source, destination) or database.start_process_run(source, destination)
         database.update_process_run(run_id, "discovering")

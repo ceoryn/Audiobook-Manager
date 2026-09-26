@@ -69,7 +69,7 @@ class RemoteToLocalPlanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             plan = {"destination_root": str(root)}
-            item = {"remote_source": "../elsewhere.m4b",
+            item = {"asin": "B000000001", "remote_source": "../elsewhere.m4b",
                     "destination_path": str(root / "book.m4b"),
                     "source_fingerprint": {"path": "../elsewhere.m4b", "size": 5, "mtime_ns": 1},
                     "source_bytes": 5}
@@ -137,7 +137,9 @@ class RemoteToLocalCopyTests(unittest.TestCase):
                     "source_fingerprint": fingerprint, "source_bytes": 6,
                     "destination_path": str(target), "asin": "B000000001",
                     "metadata": {"title": "Example"}}
-            plan = {"destination_root": str(root), "summary": {"reserve_bytes": 0},
+            plan = {"schema_version": 2, "mode": "dry_run_no_media_writes",
+                    "destination_device": root.stat().st_dev,
+                    "destination_root": str(root), "summary": {"reserve_bytes": 0},
                     "operations": [item]}
             digest = hashlib.sha256(b"sample").hexdigest()
 
@@ -145,8 +147,7 @@ class RemoteToLocalCopyTests(unittest.TestCase):
                 stage.write_bytes(b"sample")
                 return digest
 
-            with patch("pathlib.Path.is_mount", return_value=True), \
-                 patch("scripts.apply_remote_to_local_import.shutil.disk_usage",
+            with patch("scripts.apply_remote_to_local_import.shutil.disk_usage",
                        return_value=SimpleNamespace(free=200 * 2**30)), \
                  patch("scripts.apply_remote_to_local_import.copy_and_verify",
                        side_effect=fake_copy) as mocked:

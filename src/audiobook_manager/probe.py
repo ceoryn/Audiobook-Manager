@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -86,8 +87,9 @@ def _run_probe(path: Path, timeout_seconds: float, input_args: list[str]) -> dic
 
 def _number(value: Any, conversion: type[float] | type[int]) -> float | int | None:
     try:
-        return conversion(value)
-    except (TypeError, ValueError):
+        result = conversion(value)
+        return result if math.isfinite(result) else None
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -100,6 +102,13 @@ def probe_media(path: Path, *, timeout_seconds: float = 60.0) -> ProbeResult:
             raise
         payload = _run_probe(path, timeout_seconds, input_args)
 
+    try:
+        return _parse_probe(payload)
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise ProbeError(f"ffprobe returned malformed media information: {exc}") from exc
+
+
+def _parse_probe(payload: dict[str, Any]) -> ProbeResult:
     audio = next((stream for stream in payload.get("streams", []) if stream.get("codec_type") == "audio"), {})
     media_format = payload.get("format", {})
     tags: dict[str, str] = {}
@@ -117,6 +126,11 @@ def probe_media(path: Path, *, timeout_seconds: float = 60.0) -> ProbeResult:
         for index, chapter in enumerate(payload.get("chapters", []))
     )
     duration = _number(media_format.get("duration", audio.get("duration")), float)
+    if any(not math.isfinite(chapter.start_seconds)
+           or not math.isfinite(chapter.end_seconds)
+           or chapter.start_seconds < 0 or chapter.end_seconds < chapter.start_seconds
+           for chapter in chapters):
+        raise ValueError("invalid chapter timestamps")
     return ProbeResult(
         duration_seconds=float(duration) if duration is not None else None,
         format_name=media_format.get("format_name"),
