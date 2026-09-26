@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from .configuration import validate_library_paths
+from .configuration import require_outside_source, save_configuration, validate_library_paths
 from .database import StateDatabase
 from .engine import process_library
 
@@ -22,6 +22,8 @@ class ProcessController:
         prefer_latin_metadata: bool = False,
     ) -> None:
         self.database_path, self.source, self.destination = database_path, source, destination
+        if source is not None:
+            require_outside_source(database_path, source, purpose="state database")
         self.prefer_latin_metadata = prefer_latin_metadata
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -116,11 +118,16 @@ class ProcessController:
                 )
         return True
 
-    def configure(self, source: Path, destination: Path) -> None:
+    def configure(
+        self, source: Path, destination: Path, *, config_path: Path | None = None,
+    ) -> None:
         resolved_source, resolved_destination = validate_library_paths(source, destination)
+        require_outside_source(self.database_path, resolved_source, purpose="state database")
         with self._lock:
             if self._thread and self._thread.is_alive():
                 raise ValueError("folders cannot be changed while processing is running")
+            if config_path is not None:
+                save_configuration(config_path, resolved_source, resolved_destination)
             self.source = resolved_source
             self.destination = resolved_destination
 

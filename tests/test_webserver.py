@@ -8,9 +8,12 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 from audiobook_manager.configuration import browse_directories
 from audiobook_manager.controller import ProcessController
+from audiobook_manager.database import StateDatabase
+from audiobook_manager.review import review_items
 from audiobook_manager.webserver import ReviewRequestHandler, build_review_payload
 
 
@@ -66,6 +69,7 @@ class WebServerPayloadTests(unittest.TestCase):
 class WebServerConfigurationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.source = self.root / "source"
         self.source.mkdir()
@@ -134,6 +138,67 @@ class WebServerConfigurationTests(unittest.TestCase):
         self.assertEqual(400, raised.exception.code)
         raised.exception.close()
         self.assertFalse(self.config.exists())
+
+    def test_untrusted_origin_and_host_cannot_change_configuration(self) -> None:
+        for headers in ({"Origin": "https://untrusted.example"},
+                        {"Host": f"untrusted.example:{self.server.server_port}"}):
+            with self.subTest(headers=headers):
+                request = urllib.request.Request(
+                    f"{self.base_url}/api/config",
+                    data=json.dumps({"source": str(self.source),
+                                     "destination": str(self.root / "output")}).encode(),
+                    headers={"Content-Type": "application/json", **headers},
+                )
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    urllib.request.urlopen(request, timeout=2)
+                self.assertEqual(403, raised.exception.code)
+                raised.exception.close()
+                self.assertFalse(self.config.exists())
+
+    def test_dashboard_preflight_and_requests_succeed(self) -> None:
+        for origin in ("http://localhost:3000", "http://127.0.0.1:3000"):
+            with self.subTest(origin=origin):
+                preflight = urllib.request.Request(
+                    f"{self.base_url}/api/config", method="OPTIONS",
+                    headers={"Origin": origin, "Access-Control-Request-Method": "POST"},
+                )
+                with urllib.request.urlopen(preflight, timeout=2) as response:
+                    self.assertEqual(204, response.status)
+                    self.assertEqual(origin, response.headers["Access-Control-Allow-Origin"])
+                    self.assertEqual(b"", response.read())
+                health = urllib.request.Request(f"{self.base_url}/api/health", headers={"Origin": origin})
+                with urllib.request.urlopen(health, timeout=2) as response:
+                    self.assertEqual("ok", json.load(response)["status"])
+
+    def test_conversion_rejects_stale_confirmation(self) -> None:
+        from tests.test_review import analysis
+
+        report = analysis()
+        report["library_root"] = str(self.source)
+        item = review_items(report)[0]
+        with StateDatabase(self.database) as database:
+            database.store_decision(relationship_id=item.relationship_id, decision="confirm",
+                                    evidence_fingerprint=item.evidence_fingerprint,
+                                    group_key=item.group_key, note=None)
+            database.approve_metadata(item.relationship_id, {
+                "title": "Fixture", "authors": ["Writer"],
+                "provider": "fixture", "provider_id": "fixture-book",
+            })
+        report["groups"][0]["relationships"][0]["confidence"] = 1
+        (self.root / "analysis.json").write_text(json.dumps(report))
+        self.server.RequestHandlerClass.controller.configure(self.source, self.root / "output")
+        request = urllib.request.Request(
+            f"{self.base_url}/api/convert",
+            data=json.dumps({"relationshipId": item.relationship_id}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with patch("audiobook_manager.webserver.convert_to_m4b") as convert:
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(request, timeout=2)
+            self.assertEqual(400, raised.exception.code)
+            self.assertIn("current lineage", raised.exception.read().decode())
+            raised.exception.close()
+            convert.assert_not_called()
 
 
 if __name__ == "__main__":

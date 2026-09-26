@@ -11,6 +11,12 @@ from typing import Any
 CONFIG_SCHEMA_VERSION = 1
 
 
+def require_outside_source(path: Path, source: Path, *, purpose: str) -> None:
+    """Reject operational writes into the source, including through symlinks."""
+    if path.expanduser().resolve().is_relative_to(source.expanduser().resolve()):
+        raise ValueError(f"{purpose} must be outside the source library")
+
+
 @dataclass(frozen=True)
 class AppConfiguration:
     source: Path | None = None
@@ -68,6 +74,7 @@ def validate_library_paths(source: Path, destination: Path) -> tuple[Path, Path]
 def save_configuration(path: Path, source: Path, destination: Path) -> AppConfiguration:
     resolved_source, resolved_destination = validate_library_paths(source, destination)
     config_path = path.expanduser().resolve()
+    require_outside_source(config_path, resolved_source, purpose="configuration")
     config_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema_version": CONFIG_SCHEMA_VERSION,

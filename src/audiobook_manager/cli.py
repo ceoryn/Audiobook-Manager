@@ -15,6 +15,7 @@ from .review import decision_status, filter_items, render_detail, render_queue, 
 from .scanner import scan_library
 from .engine import process_library
 from .webserver import serve_review_app
+from .configuration import require_outside_source
 
 
 def _path_within(path: Path, directory: Path) -> bool:
@@ -157,6 +158,9 @@ def _review(args: argparse.Namespace) -> int:
         return 2
     try:
         analysis = _load_analysis(args.analysis_report)
+        require_outside_source(
+            args.database, Path(str(analysis["library_root"])), purpose="state database",
+        )
         items = review_items(analysis)
         with StateDatabase(args.database) as database:
             decisions = database.decisions()
@@ -178,6 +182,9 @@ def _review(args: argparse.Namespace) -> int:
 def _decide(args: argparse.Namespace) -> int:
     try:
         analysis = _load_analysis(args.analysis_report)
+        require_outside_source(
+            args.database, Path(str(analysis["library_root"])), purpose="state database",
+        )
         items = review_items(analysis)
         item = next((candidate for candidate in items if candidate.relationship_id == args.relationship_id), None)
         if item is None:

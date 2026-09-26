@@ -8,7 +8,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from .catalog import classify_catalog
-from .configuration import browse_directories, load_configuration, save_configuration
+from .configuration import browse_directories, load_configuration
 from .controller import ProcessController
 from .conversion import convert_to_m4b
 from .database import StateDatabase
@@ -97,26 +97,52 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
     config_path: Path
     controller: ProcessController
 
+    def _trusted_request(self) -> bool:
+        """Only the local UI and direct local clients may operate this API."""
+        try:
+            host = urlsplit("http://" + self.headers.get("Host", ""))
+            valid_host = host.hostname in {"127.0.0.1", "localhost", "::1"}
+            valid_host = valid_host and host.port == self.server.server_port
+        except ValueError:
+            valid_host = False
+        origin = self.headers.get("Origin")
+        allowed = {
+            f"http://{name}:{port}"
+            for name in ("127.0.0.1", "localhost", "[::1]")
+            for port in (3000, self.server.server_port)
+        }
+        if not valid_host or (origin is not None and origin not in allowed):
+            self._json({"error": "request must come from the local dashboard"}, HTTPStatus.FORBIDDEN)
+            return False
+        return True
+
     def _json(self, payload: object, status: HTTPStatus = HTTPStatus.OK) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode()
+        body = b"" if status == HTTPStatus.NO_CONTENT else json.dumps(payload, ensure_ascii=False).encode()
         self.send_response(status)
         headers = {
             "Content-Type": "application/json; charset=utf-8",
             "Content-Length": str(len(body)),
             "Cache-Control": "no-store",
-            "Access-Control-Allow-Origin": "http://127.0.0.1:3000",
             "Access-Control-Allow-Headers": "Content-Type",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         }
+        origin = self.headers.get("Origin")
+        if origin in {"http://127.0.0.1:3000", "http://localhost:3000", "http://[::1]:3000"}:
+            headers["Access-Control-Allow-Origin"] = origin
+            headers["Vary"] = "Origin"
         for key, value in headers.items():
             self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
     def do_OPTIONS(self) -> None:  # noqa: N802
+        if not self._trusted_request():
+            return
         self._json({}, HTTPStatus.NO_CONTENT)
 
     def do_GET(self) -> None:  # noqa: N802
+        if not self._trusted_request():
+            return
         try:
             if self.path == "/api/health":
                 self._json({"status": "ok", "readOnlyMedia": True})
@@ -149,6 +175,8 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
             self._json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._trusted_request():
+            return
         supported_paths = {
             "/api/config",
             "/api/decisions",
@@ -164,10 +192,14 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
         try:
+            if self.headers.get_content_type() != "application/json":
+                raise ValueError("requests must use application/json")
             length = int(self.headers.get("Content-Length", "0"))
             if not 0 < length <= 32768:
                 raise ValueError("invalid request size")
             body = json.loads(self.rfile.read(length))
+            if not isinstance(body, dict):
+                raise ValueError("request body must be a JSON object")
             if self.path == "/api/config":
                 source = Path(str(body.get("source", "")).strip())
                 destination = Path(str(body.get("destination", "")).strip())
@@ -175,12 +207,7 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
                     raise ValueError("source folder is required")
                 if not str(body.get("destination", "")).strip():
                     raise ValueError("output folder is required")
-                self.controller.configure(source, destination)
-                save_configuration(
-                    self.config_path,
-                    self.controller.source or source,
-                    self.controller.destination or destination,
-                )
+                self.controller.configure(source, destination, config_path=self.config_path)
                 self._json({"saved": True, **self.controller.status()})
                 return
             if self.path == "/api/process/start":
@@ -202,10 +229,11 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
                 ))
                 return
             relationship_id = str(body["relationshipId"])
+            analysis = _load_json(self.analysis_path)
             item = next(
                 (
                     candidate
-                    for candidate in review_items(_load_json(self.analysis_path))
+                    for candidate in review_items(analysis)
                     if candidate.relationship_id == relationship_id
                 ),
                 None,
@@ -228,14 +256,15 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
                     raise ValueError("output folder is not configured")
                 with StateDatabase(self.database_path) as database:
                     decisions, approved = database.decisions(), database.approved_metadata()
-                decision = decisions.get(relationship_id)
-                if not decision or decision["decision"] != "confirm":
-                    raise ValueError("lineage must be confirmed before conversion")
+                state, stale = decision_status(item, decisions)
+                if state != "confirm" or stale:
+                    raise ValueError("current lineage evidence must be confirmed before conversion")
                 metadata = approved.get(relationship_id)
                 if metadata is None:
                     raise ValueError("metadata must be approved before conversion")
-                analysis = _load_json(self.analysis_path)
                 library_root = Path(str(analysis["library_root"]))
+                if self.controller.source is None or library_root.resolve() != self.controller.source.resolve():
+                    raise ValueError("analysis belongs to a different source; scan and review again")
                 relationship = item.relationship
                 relative_inputs = (
                     [relationship["target_file"]]
@@ -286,6 +315,8 @@ def serve_review_app(
     host: str = "127.0.0.1",
     port: int = 8788,
 ) -> None:
+    if host not in {"127.0.0.1", "localhost"}:
+        raise ValueError("the unauthenticated review API must bind to localhost")
     configuration = load_configuration(config_path)
     source = source_root or configuration.source
     destination = output_root or configuration.destination

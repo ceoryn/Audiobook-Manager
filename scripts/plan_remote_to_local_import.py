@@ -20,6 +20,7 @@ from audiobook_manager.display import person_key, prefer_display
 from audiobook_manager.output import plan_output
 
 from scripts.audit_remote_library import AUDIO, normalized
+from scripts.remote_import_plan import SCHEMA_VERSION
 
 
 DEFAULT_RESERVE_BYTES = 10 * 2**30
@@ -53,7 +54,7 @@ def build_plan(remote_plan: dict[str, Any], destination_root: Path,
                source_paths: list[str], source_books: list[dict[str, Any]],
                *, free_bytes: int,
                reserve_bytes: int = DEFAULT_RESERVE_BYTES) -> dict[str, Any]:
-    if reserve_bytes < 0:
+    if type(reserve_bytes) is not int or reserve_bytes < 0:
         raise ValueError("reserve bytes cannot be negative")
     source_keys = {normalized(path) for path in source_paths}
     candidates = [item for item in remote_plan["operations"] if item["action"] == "proposed_copy"]
@@ -117,7 +118,9 @@ def build_plan(remote_plan: dict[str, Any], destination_root: Path,
     bytes_by_action: Counter[str] = Counter()
     for item in operations:
         bytes_by_action[item["action"]] += item["source_bytes"]
-    return {"mode": "dry_run_no_media_writes", "generated_at": datetime.now().astimezone().isoformat(),
+    return {"schema_version": SCHEMA_VERSION,
+            "destination_device": destination_root.stat().st_dev,
+            "mode": "dry_run_no_media_writes", "generated_at": datetime.now().astimezone().isoformat(),
             "based_on": remote_plan["generated_at"], "remote_host": remote_plan["remote_host"],
             "remote_root": remote_plan["remote_root"], "destination_root": str(destination_root),
             "summary": {"actions": dict(counts), "bytes_by_action": dict(bytes_by_action),

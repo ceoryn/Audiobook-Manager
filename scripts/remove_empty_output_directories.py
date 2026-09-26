@@ -21,7 +21,7 @@ def empty_output_directories(output_root: Path) -> list[dict[str, Any]]:
     output_root = output_root.resolve()
     rows: list[dict[str, Any]] = []
     for directory in sorted(output_root.rglob("*"), key=lambda path: str(path).casefold()):
-        if not directory.is_dir():
+        if not directory.is_dir() or not _safe_candidate(directory, output_root):
             continue
         relative = directory.relative_to(output_root)
         if not relative.parts or relative.parts[0].startswith("_"):
@@ -39,21 +39,34 @@ def empty_output_directories(output_root: Path) -> list[dict[str, Any]]:
 
 def _safe_candidate(path: Path, output_root: Path) -> bool:
     try:
-        relative = path.resolve().relative_to(output_root)
+        relative = path.absolute().relative_to(output_root)
     except ValueError:
         return False
-    return bool(relative.parts and not relative.parts[0].startswith("_"))
+    return bool(
+        relative.parts
+        and not any(part.startswith(("_", ".")) for part in relative.parts)
+        and path.absolute() == path.resolve()
+        and not path.is_symlink()
+    )
 
 
 def remove_empty_directories(
     *, output_root: Path, audited_paths: list[Path]
 ) -> dict[str, Any]:
     output_root = output_root.resolve()
+    # Validate the whole audit before changing anything. Do not resolve away
+    # symlinks: an alias must never authorize removal of its target directory.
+    unique = {path.absolute() for path in audited_paths}
+    for path in unique:
+        if not _safe_candidate(path, output_root):
+            raise ValueError(f"unsafe empty-directory candidate: {path}")
     removed: list[dict[str, str]] = []
     skipped_nonempty: list[str] = []
     already_absent: list[str] = []
 
     def remove(path: Path, reason: str) -> bool:
+        if not _safe_candidate(path, output_root):
+            raise ValueError(f"unsafe empty-directory candidate: {path}")
         resolved = path.resolve()
         if not _safe_candidate(resolved, output_root):
             raise ValueError(f"unsafe empty-directory candidate: {path}")
@@ -72,30 +85,16 @@ def remove_empty_directories(
         removed.append({"relative_path": relative, "reason": reason})
         return True
 
-    unique = {path.resolve() for path in audited_paths}
+    ancestors: set[Path] = set()
     for path in sorted(unique, key=lambda value: (-len(value.parts), str(value).casefold())):
-        remove(path, "empty_in_saved_audit")
+        if remove(path, "empty_in_saved_audit"):
+            ancestors.update(parent for parent in path.parents if _safe_candidate(parent, output_root))
 
-    # Removing empty leaves can reveal empty parent directories that were not
-    # leaves during the audit. Re-scan deepest-first until no more can be pruned.
-    while True:
-        candidates = sorted(
-            (
-                path for path in output_root.rglob("*")
-                if path.is_dir() and _safe_candidate(path, output_root)
-            ),
-            key=lambda value: (-len(value.parts), str(value).casefold()),
-        )
-        removed_this_pass = 0
-        for path in candidates:
-            try:
-                is_empty = not any(path.iterdir())
-            except OSError:
-                continue
-            if is_empty and remove(path, "became_empty_after_descendant_cleanup"):
-                removed_this_pass += 1
-        if not removed_this_pass:
-            break
+    # Only prune parents of the audited leaves actually removed. Unrelated empty
+    # directories, including ones created since the audit, remain untouched.
+    for path in sorted(ancestors, key=lambda value: (-len(value.parts), str(value))):
+        if path.is_dir() and not any(path.iterdir()):
+            remove(path, "became_empty_after_descendant_cleanup")
 
     remaining = [
         str(path.relative_to(output_root))
@@ -123,6 +122,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--audit", type=Path, required=True)
     parser.add_argument("--report-dir", type=Path, default=Path("reports"))
+    parser.add_argument("--approved", action="store_true", help="Apply the reviewed empty-folder audit")
     return parser.parse_args()
 
 
@@ -134,10 +134,23 @@ def main() -> int:
         raise ValueError("cleanup requires a saved read-only empty-directory audit")
     if int((audit.get("summary") or {}).get("directories_removed") or 0) != 0:
         raise ValueError("cleanup audit already records applied directory removal")
-    output_root = Path(str(audit.get("output_root") or "")).resolve()
+    if not audit.get("output_root"):
+        raise ValueError("cleanup audit must name its output root")
+    output_root = Path(str(audit["output_root"])).resolve()
     if not output_root.is_dir():
         raise ValueError(f"output root does not exist: {output_root}")
     audited_paths = [Path(item["path"]) for item in audit.get("empty_directories") or []]
+    for path in audited_paths:
+        if not _safe_candidate(path, output_root):
+            raise ValueError(f"unsafe empty-directory candidate: {path}")
+    if not args.approved:
+        print(json.dumps({
+            "mode": "dry-run", "directories_removed": 0,
+            "audited_paths": [str(path) for path in audited_paths],
+            "scope": "Audited empty directories and parents made empty by their removal only",
+            "next_step": "Review the audit, then supply --approved to apply it",
+        }, indent=2))
+        return 0
     result = remove_empty_directories(output_root=output_root, audited_paths=audited_paths)
     payload = {
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),

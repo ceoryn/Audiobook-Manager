@@ -12,6 +12,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -23,6 +24,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from audiobook_manager.probe import probe_media
+from scripts.remote_import_plan import validate_plan
 
 
 REMOTE_STREAM = r"""
@@ -72,6 +74,8 @@ def save_json_atomic(path: Path, value: dict[str, Any]) -> None:
 
 
 def validated_paths(plan: dict[str, Any], item: dict[str, Any], root: Path) -> tuple[str, Path]:
+    if not re.fullmatch(r"[A-Za-z0-9]{10}", str(item.get("asin", ""))):
+        raise ValueError("import ASIN must be ten alphanumeric characters")
     relative = PurePosixPath(item["remote_source"])
     if relative.is_absolute() or not relative.parts or ".." in relative.parts:
         raise ValueError("unsafe relative remote source path")
@@ -165,8 +169,7 @@ def publish(stage: Path, target: Path) -> None:
 
 def run(plan: dict[str, Any], root: Path, stage_root: Path, ledger_path: Path,
         control_socket: Path, known_hosts: Path, *, max_books: int | None = None) -> dict[str, int]:
-    if not root.is_dir() or not root.parent.is_mount():
-        raise ValueError("destination filesystem and audiobook root must be present")
+    validate_plan(plan, root)
     if os.statvfs(root).f_flag & os.ST_RDONLY:
         raise ValueError("destination is mounted read-only; no import can start")
     if stage_root.exists() and (stage_root.is_symlink() or
@@ -176,7 +179,6 @@ def run(plan: dict[str, Any], root: Path, stage_root: Path, ledger_path: Path,
         raise ValueError("staging root escapes the destination filesystem")
     if not control_socket.exists() or not known_hosts.is_file():
         raise ValueError("SSH control socket or pinned known-hosts file is unavailable")
-    stage_root.mkdir(parents=True, exist_ok=True)
     ledger = json.loads(ledger_path.read_text()) if ledger_path.exists() else {}
     if not isinstance(ledger, dict):
         raise ValueError("import ledger must be a JSON object")
@@ -184,6 +186,11 @@ def run(plan: dict[str, Any], root: Path, stage_root: Path, ledger_path: Path,
     if isinstance(reserve_bytes, bool) or not isinstance(reserve_bytes, int) or reserve_bytes < 0:
         raise ValueError("approved plan has an invalid destination reserve")
     selected = [item for item in plan["operations"] if item["action"] == "proposed_copy_to_destination"]
+    for item in selected:
+        validated_paths(plan, item, root)
+    stage_root.mkdir(parents=True, exist_ok=True)
+    if stage_root.stat().st_dev != root.stat().st_dev:
+        raise ValueError("staging and destination are not on the same filesystem")
     counts: Counter[str] = Counter()
     for number, item in enumerate(selected, 1):
         if max_books is not None and counts["copied"] >= max_books:
@@ -236,15 +243,14 @@ def main() -> None:
     parser.add_argument("--approved", action="store_true")
     args = parser.parse_args()
     plan = json.loads(args.plan.read_text())
-    if plan.get("mode") != "dry_run_no_media_writes":
-        parser.error("expected a dry-run remote-to-local plan")
+    root = args.destination_root.resolve()
+    validate_plan(plan, root)
     count = sum(item["action"] == "proposed_copy_to_destination" for item in plan["operations"])
     if not args.approved:
         print(f"Dry run only: {count} proposed copies. No media changed.")
         return
     if args.max_books is not None and args.max_books < 1:
         parser.error("--max-books must be positive")
-    root = args.destination_root.resolve()
     stage_root = root.parent / ".audiobook-manager-staging"
     lock_path = args.ledger.with_suffix(args.ledger.suffix + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
