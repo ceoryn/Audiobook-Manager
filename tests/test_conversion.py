@@ -4,11 +4,26 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
-from audiobook_manager.conversion import convert_to_m4b
+from audiobook_manager.conversion import _staging_directory, convert_to_m4b
 from audiobook_manager.probe import is_aac_container, probe_media
 from audiobook_manager.executor import _existing_output_is_compatible
+
+
+class StagingSafetyTests(unittest.TestCase):
+    def test_staging_symlink_cannot_write_into_original_library(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "source", root / "output"
+            source.mkdir()
+            output.mkdir()
+            (output / ".audiobook-manager-staging").symlink_to(source)
+            with self.assertRaises(ValueError):
+                _staging_directory(output, source)
+            self.assertEqual([], list(source.iterdir()))
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
@@ -41,6 +56,8 @@ class MixedFormatConversionTests(unittest.TestCase):
             probe = probe_media(result)
             self.assertEqual("aac", probe.codec_name)
             self.assertAlmostEqual(1.0, probe.duration_seconds or 0, delta=0.1)
+            self.assertFalse(list(output_root.glob("audiobook-manager-*")))
+            self.assertTrue((output_root / ".audiobook-manager-staging").is_dir())
 
     def test_copying_existing_m4b_preserves_chapters_while_retagging(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -78,6 +95,7 @@ class MixedFormatConversionTests(unittest.TestCase):
             probe = probe_media(result)
             self.assertEqual("aac", probe.codec_name)
             self.assertEqual(2, len(probe.chapters))
+            self.assertEqual(["One", "Two"], [chapter.title for chapter in probe.chapters])
             self.assertEqual("Book", probe.tags.get("title"))
             self.assertEqual("Kumanano", probe.tags.get("artist"))
             extensionless = source.with_suffix("")
@@ -88,6 +106,36 @@ class MixedFormatConversionTests(unittest.TestCase):
                 {"title": "Book", "authors": ["Kumanano"]},
             )
             self.assertTrue(compatible, detail)
+
+    def test_metadata_remux_rejects_changed_chapter_names_before_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_root, output_root = root / "source", root / "output"
+            source_root.mkdir()
+            source = source_root / "original.m4b"
+            chapters = root / "chapters.ffmeta"
+            chapters.write_text(";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=1000\ntitle=Original Chapter\n")
+            subprocess.run([
+                "ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
+                "sine=frequency=440:duration=1", "-f", "ffmetadata", "-i", str(chapters),
+                "-map", "0:a:0", "-map_chapters", "1", "-c:a", "aac", str(source),
+            ], check=True)
+            original = source.read_bytes()
+            destination = output_root / "Author - Book.m4b"
+
+            def changed_probe(path: Path):
+                result = probe_media(path)
+                if path.name == "output.m4b":
+                    return replace(result, chapters=(replace(result.chapters[0], title="Incorrect Chapter"),))
+                return result
+
+            with patch("audiobook_manager.conversion.probe_media", side_effect=changed_probe):
+                with self.assertRaisesRegex(RuntimeError, "chapter timeline/name"):
+                    convert_to_m4b(inputs=[source], library_root=source_root,
+                                   output_root=output_root, destination=destination,
+                                   metadata={"title": "Book", "authors": ["Author"]}, copy_audio=True)
+            self.assertFalse(destination.exists())
+            self.assertEqual(original, source.read_bytes())
 
     def test_mixed_aac_and_mp3_parts_are_concatenated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

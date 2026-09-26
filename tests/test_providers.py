@@ -176,6 +176,32 @@ class ProviderTests(unittest.TestCase):
                     {"title": "Hard Eight", "authors": ["Stephanie Plum"]}, [provider], database)
         self.assertIsNone(chosen)
 
+    def test_latin_display_preference_preserves_supported_local_author(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, StateDatabase(Path(directory) / "state.db") as database:
+            provider = Recording()
+            provider.search = lambda query: [{  # type: ignore[method-assign]
+                "title": "Untapped", "authors": ["Unrelated Catalog Author"]
+            }]
+            with patch("audiobook_manager.providers.time.sleep"):
+                chosen, _, _ = identify_metadata(
+                    {"title": "Untapped", "authors": ["Supported Source Author"]},
+                    [provider], database, prefer_latin=True,
+                )
+        self.assertIsNone(chosen)
+
+    def test_latin_display_preference_keeps_author_for_mixed_script_credits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, StateDatabase(Path(directory) / "state.db") as database:
+            provider = Recording()
+            provider.search = lambda query: [{  # type: ignore[method-assign]
+                "title": "Example", "authors": ["Another Author"]
+            }]
+            with patch("audiobook_manager.providers.time.sleep"):
+                chosen, _, _ = identify_metadata(
+                    {"title": "Example", "authors": ["Known Author", "くまなの"]},
+                    [provider], database, prefer_latin=True,
+                )
+        self.assertIsNone(chosen)
+
     def test_series_query_repairs_narrator_stored_as_local_artist(self) -> None:
         with tempfile.TemporaryDirectory() as directory, StateDatabase(Path(directory) / "state.db") as database:
             provider = SeriesFocused()

@@ -67,6 +67,7 @@ def _clean_series(value: str) -> str:
 
 
 def _clean_author_credit(value: str) -> str:
+    value = re.sub(r"\s*\(authors?\)\s*$", "", value, flags=re.I)
     value = re.sub(r"^\s*(?:written|authored)\s+by\s+", "", value, flags=re.I)
     value = re.split(
         r"[,;]?\s*(?:narrated|read|performed)\s+by\b", value, maxsplit=1, flags=re.I

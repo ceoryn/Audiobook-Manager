@@ -135,6 +135,7 @@ def discover_run(source: Path, destination: Path, database_path: Path, *, worker
                     destination=destination,
                     files=list(result.chosen_files or result.alternate_files or result.problem_files),
                     require_latin=prefer_latin_metadata,
+                    known_files=list(dict.fromkeys([*result.chosen_files, *result.alternate_files])),
                 )
                 if reused:
                     database.log_event(
