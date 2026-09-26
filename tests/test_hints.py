@@ -8,6 +8,14 @@ from audiobook_manager.models import BookGroup, ProbeResult, ScannedFile
 
 
 class HintTests(unittest.TestCase):
+    def test_author_role_label_is_not_part_of_author_name(self) -> None:
+        probe = ProbeResult(3600, "m4b", "aac", 96000, 44100, 2,
+                            {"title": "Example Book", "artist": "Example Writer (Author)"})
+        relative = Path("Example Writer/Example Book/book.m4b")
+        item = ScannedFile(Path("/src") / relative, relative, 1, 1, probe)
+        hint = extract_hint(BookGroup("example", (item,), ()))
+        self.assertEqual(["Example Writer"], hint["authors"])
+
     def test_placeholder_credit_falls_back_to_real_author_folder(self) -> None:
         probe = ProbeResult(
             60, "mp3", "mp3", 64000, 44100, 2,

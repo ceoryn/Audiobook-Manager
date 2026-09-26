@@ -555,11 +555,27 @@ class StateDatabase:
         return verified
 
     def adopt_verified_output(
-        self, *, run_id: int, book_id: str, metadata: dict[str, object], output_path: Path
+        self, *, run_id: int, book_id: str, metadata: dict[str, object], output_path: Path,
+        selected_files: list[str] | None = None,
     ) -> None:
         """Complete a current record from an independently validated prior output."""
-        self._write(
-            lambda database: database.execute(
+        def adopt(database: sqlite3.Connection) -> None:
+            if selected_files is not None:
+                row = database.execute(
+                    "SELECT files_json, alternate_files_json FROM detected_books WHERE run_id=? AND book_id=?",
+                    (run_id, book_id),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("detected book does not exist")
+                known = list(dict.fromkeys(json.loads(row["files_json"]) + json.loads(row["alternate_files_json"])))
+                if not selected_files or len(set(selected_files)) != len(selected_files) or not set(selected_files) <= set(known):
+                    raise ValueError("approved selection is not part of the current source representations")
+                database.execute(
+                    """UPDATE detected_books SET files_json=?, alternate_files_json=?
+                       WHERE run_id=? AND book_id=?""",
+                    (json.dumps(selected_files), json.dumps([p for p in known if p not in selected_files]), run_id, book_id),
+                )
+            database.execute(
                 """UPDATE detected_books
                       SET state='complete', metadata_json=?, confidence=1,
                           output_path=?, failure=NULL, quarantine_path=NULL,
@@ -567,7 +583,7 @@ class StateDatabase:
                     WHERE run_id=? AND book_id=?""",
                 (json.dumps(metadata, sort_keys=True), str(output_path.resolve()), run_id, book_id),
             )
-        )
+        self._write(adopt)
 
     def reserve_output_claim(self, run_id: int, book_id: str, output_path: Path) -> str | None:
         """Atomically reserve one physical output for one detected identity.

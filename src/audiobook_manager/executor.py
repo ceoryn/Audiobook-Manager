@@ -132,6 +132,7 @@ def reuse_verified_output(
     destination: Path,
     files: list[str],
     require_latin: bool = False,
+    known_files: list[str] | None = None,
 ) -> str | None:
     """Adopt a validated, explicitly verified output for unchanged source files."""
     output_root = destination.resolve()
@@ -144,7 +145,19 @@ def reuse_verified_output(
         output = Path(str(prior["output_path"])).resolve()
         if not output.is_file() or not output.is_relative_to(output_root):
             continue
-        compatible, _detail = _existing_output_is_compatible(output, source, files, metadata)
+        approved = metadata.get("_approved_source_selection")
+        selected: list[str] | None = None
+        if approved is not None:
+            if (not isinstance(approved, list) or not approved
+                    or not all(isinstance(path, str) for path in approved)
+                    or len(set(approved)) != len(approved) or known_files is None
+                    or not set(approved) <= set(known_files)
+                    or any(Path(path).is_absolute() or ".." in Path(path).parts
+                           or not (source / path).resolve().is_relative_to(source.resolve())
+                           for path in approved)):
+                continue
+            selected = approved
+        compatible, _detail = _existing_output_is_compatible(output, source, selected or files, metadata)
         if not compatible:
             continue
         owner = database.reserve_output_claim(run_id, book_id, output)
@@ -152,7 +165,8 @@ def reuse_verified_output(
             continue
         try:
             database.adopt_verified_output(
-                run_id=run_id, book_id=book_id, metadata=metadata, output_path=output
+                run_id=run_id, book_id=book_id, metadata=metadata, output_path=output,
+                selected_files=selected,
             )
         except Exception:
             database.release_output_claim(run_id, book_id, output)

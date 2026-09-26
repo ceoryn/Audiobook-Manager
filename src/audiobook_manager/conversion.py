@@ -31,6 +31,16 @@ def _safe_name(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip(" .")[:180] or "Untitled"
 
 
+def _staging_directory(output_root: Path, library_root: Path) -> Path:
+    """Keep interrupted conversions out of the visible author/book tree."""
+    staging = output_root / ".audiobook-manager-staging"
+    if staging.is_symlink() or staging.resolve() != staging:
+        raise ValueError("conversion staging must not be a symbolic link")
+    require_outside_source(staging, library_root, purpose="conversion staging")
+    staging.mkdir(parents=True, exist_ok=True)
+    return staging
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -58,7 +68,7 @@ def copy_verified_m4b(*, source: Path, library_root: Path, output_root: Path,
     original = probe_media(source)
     if original.codec_name != "aac" or not original.duration_seconds:
         raise ValueError("clean-copy source must contain readable AAC audio")
-    with tempfile.TemporaryDirectory(prefix="audiobook-manager-copy-", dir=output_root) as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="copy-", dir=_staging_directory(output_root, library_root)) as temp_dir:
         staged = Path(temp_dir) / "output.m4b"
         shutil.copy2(source, staged)
         copied = probe_media(staged)
@@ -100,7 +110,7 @@ def convert_to_m4b(*, inputs: list[Path], library_root: Path, output_root: Path,
         raise FileExistsError(f"output already exists: {destination}")
     output_root.mkdir(parents=True, exist_ok=True)
     probes = [probe_media(path) for path in resolved]
-    with tempfile.TemporaryDirectory(prefix="audiobook-manager-", dir=output_root) as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="convert-", dir=_staging_directory(output_root, library_root)) as temp_dir:
         temp = Path(temp_dir)
         conversion_inputs = list(resolved)
         effective_probes = list(probes)
@@ -279,6 +289,12 @@ def convert_to_m4b(*, inputs: list[Path], library_root: Path, output_root: Path,
                 "output chapter verification failed: "
                 f"expected {len(probes[0].chapters)}, got {len(result.chapters)}"
             )
+        if preserve_container:
+            for before, after in zip(probes[0].chapters, result.chapters, strict=True):
+                if (before.title != after.title
+                        or abs(before.start_seconds - after.start_seconds) > 0.02
+                        or abs(before.end_seconds - after.end_seconds) > 0.02):
+                    raise RuntimeError("output chapter timeline/name verification failed")
         destination.parent.mkdir(parents=True, exist_ok=True)
         try:
             os.link(staged, destination)
