@@ -15,7 +15,9 @@ ARTIFACTS = re.compile(
 BOOK_NUMBER = re.compile(r"\bbook\s+(\d+(?:\.\d+)?)\s*[-:._]?\s*", re.I)
 LEADING_NUMBER = re.compile(r"^\s*\d+(?:\.\d+)?\s*[-:._]?\s*")
 LEADING_BOOK_NUMBER = re.compile(r"^\s*book\s+\d+(?:\.\d+)?\s*[-:._]?\s*", re.I)
-LEADING_COLLECTION_CODE = re.compile(r"^\s*hp\s*[-:._]?\s*\d+\s*[-:._]?\s*", re.I)
+LEADING_COLLECTION_CODE = re.compile(
+    r"^\s*([a-z]{1,8})\s*[-:._]?\s*\d+(?:\.\d+)?\s*[-:._]?\s+(.+)$", re.I
+)
 LEADING_FILE_POSITION = re.compile(
     r"^\s*(?:book\s*)?[a-z]?(\d+(?:\.\d+)?)\s*[-:._]?\s*", re.I
 )
@@ -54,7 +56,6 @@ GRAPHIC_AUDIO_BOOK_FOLDER = re.compile(
 
 def _clean_title(value: str) -> str:
     value = ARTIFACTS.sub(" ", value)
-    value = LEADING_COLLECTION_CODE.sub("", value)
     value = QUALITY_MARKER.sub(" ", value)
     value = re.sub(r"\([^)]*(?:fantasy|audio|bitrate|narrat)[^)]*\)", " ", value, flags=re.I)
     value = re.sub(r"\(\s*\)", " ", value)
@@ -64,6 +65,24 @@ def _clean_title(value: str) -> str:
 
 def _clean_series(value: str) -> str:
     return _clean_title(value).strip(" -_")
+
+
+def _collection_title(value: str, evidence: list[str], series_names: list[str]) -> str:
+    """Remove a numbered collection code only with independent identity evidence."""
+    match = LEADING_COLLECTION_CODE.fullmatch(value)
+    if not match:
+        return value
+    code, leaf = match.groups()
+    leaf_key = person_key(_clean_title(leaf))
+    supported_title = bool(leaf_key) and any(
+        person_key(_clean_title(candidate)) == leaf_key for candidate in evidence
+    )
+    series_keys = {person_key(series) for series in series_names if person_key(series)}
+    series_initials = ({"".join(word[0] for word in next(iter(series_keys)).split())}
+                      if len(series_keys) == 1 else set())
+    if supported_title or code.casefold() in series_initials:
+        return leaf
+    return value
 
 
 def _clean_author_credit(value: str) -> str:
@@ -222,8 +241,11 @@ def extract_hint(group: BookGroup, chosen_files: tuple[str, ...] = ()) -> dict[s
                  if len(selected) > 1 and repeated_track_title else albums[0] if albums else
                  useful_track_title if len(selected) == 1 and useful_track_title else
                  group.key.split(" — ")[-1])
-    title = _clean_title(LEADING_BOOK_NUMBER.sub("", LEADING_NUMBER.sub("", raw_title)))
     path_parts = [part for item in selected for part in item.relative_path.parts[:-1]]
+    title_evidence = [*albums, *useful_track_titles, *path_parts,
+                      *(item.relative_path.stem for item in selected), group.key.split(" — ")[-1]]
+    raw_title = _collection_title(raw_title, title_evidence, values("series", "grouping"))
+    title = _clean_title(LEADING_BOOK_NUMBER.sub("", LEADING_NUMBER.sub("", raw_title)))
     numbered = next(((part, BOOK_NUMBER.search(part)) for part in reversed(path_parts)
                      if BOOK_NUMBER.search(part)), None)
     bracketed = next(((part, BRACKETED_SERIES.search(part)) for part in reversed(path_parts)

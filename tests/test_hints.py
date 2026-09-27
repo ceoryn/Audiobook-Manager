@@ -264,15 +264,35 @@ class HintTests(unittest.TestCase):
         self.assertEqual("Stormlight Archive", hint["series"])
         self.assertEqual("1", hint["series_position"])
 
-    def test_harry_potter_collection_code_and_written_by_credit_are_removed(self) -> None:
+    def test_collection_initials_require_explicit_series_evidence(self) -> None:
         probe = ProbeResult(3600, "mp3", "mp3", 64000, 44100, 2,
-                            {"album": "HP-6 Harry Potter And The Half-Blood Prince",
-                             "artist": "Written By J. K. Rowling, Narrated By Jim Dale"})
-        relative = Path("Harry Potter Complete Audiobook Collection/book.mp3")
+                            {"album": "ES-6 The Example Journey", "series": "Example Saga",
+                             "artist": "Written By Example Writer, Narrated By Example Reader"})
+        relative = Path("Example Saga Complete Audiobook Collection/book.mp3")
         item = ScannedFile(Path("/src") / relative, relative, 1, 1, probe)
-        hint = extract_hint(BookGroup("harry potter 6", (item,), ()))
-        self.assertEqual("Harry Potter And The Half-Blood Prince", hint["title"])
-        self.assertEqual(["J. K. Rowling"], hint["authors"])
+        hint = extract_hint(BookGroup("example saga 6", (item,), ()))
+        self.assertEqual("The Example Journey", hint["title"])
+        self.assertEqual(["Example Writer"], hint["authors"])
+
+    def test_arbitrary_collection_code_requires_independent_title_evidence(self) -> None:
+        for code in ("ZX", "LM", "HP"):
+            with self.subTest(code=code):
+                probe = ProbeResult(3600, "mp3", "mp3", 64000, 44100, 2,
+                                    {"album": f"{code}-6 The Example Journey", "artist": "Example Writer"})
+                relative = Path("Example Writer/The Example Journey/book.mp3")
+                item = ScannedFile(Path("/src") / relative, relative, 1, 1, probe)
+                hint = extract_hint(BookGroup("example", (item,), ()))
+                self.assertEqual("The Example Journey", hint["title"])
+
+    def test_unconfirmed_numbered_title_prefix_is_preserved(self) -> None:
+        for title in ("HP-6 The Example Journey", "ZX-6 The Example Journey", "Area 51 Visitors"):
+            with self.subTest(title=title):
+                probe = ProbeResult(3600, "mp3", "mp3", 64000, 44100, 2,
+                                    {"album": title, "artist": "Example Writer", "series": "Unrelated Saga"})
+                relative = Path("Example Writer/Collection/book.mp3")
+                item = ScannedFile(Path("/src") / relative, relative, 1, 1, probe)
+                hint = extract_hint(BookGroup("collection", (item,), ()))
+                self.assertEqual(title, hint["title"])
 
     def test_bitrate_marker_is_removed_without_losing_edition_label(self) -> None:
         probe = ProbeResult(3600, "mp3", "mp3", 64000, 44100, 2,
