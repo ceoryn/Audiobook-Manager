@@ -186,7 +186,15 @@ def identify_metadata(hint: dict[str, Any], providers: list[MetadataProvider], d
             chosen, ranked = title_only_chosen, title_only_ranked
     if prefer_latin:
         latin_candidates = [item for item in candidates if latin_display_metadata(item)]
-        latin_hint = {**hint, "authors": []}
+        # Display preferences must not erase a supported Latin author. Only
+        # native-script author names require the title-based transliteration
+        # fallback; an explicitly repairable local credit uses the same rule
+        # as the normal identification path above.
+        translate_author = bool(authors) and all(
+            not latin_display_metadata({"authors": [author]}) for author in authors
+        )
+        latin_hint = ({**hint, "authors": []}
+                      if translate_author or hint.get("allow_author_repair") else hint)
         latin_chosen, _ = choose_automatic(
             latin_hint, latin_candidates, threshold=threshold
         )

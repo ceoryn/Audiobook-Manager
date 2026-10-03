@@ -455,8 +455,8 @@ def _partition_author_identity(members: list[ScannedFile]) -> str:
         if _tag(item, "author", "album_artist", "artist")
     }
     tagged.discard("")
-    # A folder such as ``R.A Salvatore`` is stronger than a combined Artist tag
-    # such as ``R. A. Salvatore, Victor Bevine`` when it is contained in it.
+    # A matching author folder is stronger than a combined author/narrator
+    # Artist tag when its normalized words are contained in that tag.
     top_words = set(top_level.split())
     if len(top_words) >= 2 and any(top_words <= set(value.split()) for value in tagged):
         return top_level

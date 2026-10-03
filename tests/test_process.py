@@ -25,6 +25,80 @@ from audiobook_manager.probe import probe_media
 
 
 class ParallelProcessTests(unittest.TestCase):
+    def test_approved_recovery_selection_survives_rediscovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, destination = root / "source", root / "output"
+            source.mkdir()
+            destination.mkdir()
+            output = destination / "Recovered.m4b"
+            output.write_bytes(b"generated fixture; media validator is mocked")
+            parts = ["disc1.mp3", "disc2.mp3"]
+            metadata = {"title": "Recovered", "authors": ["Example Author"],
+                        "_verified_output": True, "_approved_source_selection": parts}
+            with StateDatabase(root / "state.db") as database:
+                old = database.start_process_run(source, destination)
+                database.store_detected_book(run_id=old, book_id="book", state="identified",
+                    source_fingerprint="unchanged", classification="combine_components",
+                    files=parts, alternate_files=["broken-alternate.mp3"], evidence=[])
+                database.store_book_identification(run_id=old, book_id="book", state="complete",
+                    metadata=metadata, candidates=[], evidence=[], confidence=1)
+                database.update_book_state(old, "book", "complete", output_path=str(output))
+                database.update_process_run(old, "complete")
+                new = database.start_process_run(source, destination)
+                database.store_detected_book(run_id=new, book_id="book", state="identified",
+                    source_fingerprint="unchanged", classification="convert_single",
+                    files=["broken-alternate.mp3"], alternate_files=parts, evidence=[])
+                kwargs = dict(database=database, run_id=new, book_id="book", source=source,
+                              destination=destination, files=["broken-alternate.mp3"])
+                with patch("audiobook_manager.executor._existing_output_is_compatible",
+                           return_value=(True, "validated")) as validate:
+                    self.assertIsNone(reuse_verified_output(**kwargs, source_fingerprint="changed",
+                                      known_files=["broken-alternate.mp3", *parts]))
+                    self.assertIsNone(reuse_verified_output(**kwargs, source_fingerprint="unchanged",
+                                      known_files=["broken-alternate.mp3"]))
+                    self.assertIsNone(reuse_verified_output(**kwargs, source_fingerprint="unchanged"))
+                    validate.assert_not_called()
+                    actual = reuse_verified_output(**kwargs, source_fingerprint="unchanged",
+                                                   known_files=["broken-alternate.mp3", *parts])
+                    validate.assert_called_once_with(output, source, parts, metadata)
+                self.assertEqual(str(output), actual)
+                current = database.process_books(new)[0]
+                self.assertEqual(parts, current["files"])
+                self.assertEqual(["broken-alternate.mp3"], current["alternate_files"])
+                self.assertEqual("complete", current["state"])
+
+    def test_approved_selection_cannot_escape_source_or_bypass_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, destination = root / "source", root / "output"
+            source.mkdir()
+            destination.mkdir()
+            output = destination / "Recovered.m4b"
+            output.write_bytes(b"generated fixture")
+            for selection in (["../outside.mp3"], ["/outside.mp3"], ["part.mp3", "part.mp3"],
+                              [], "part.mp3", ["part.mp3"]):
+                with self.subTest(selection=selection), StateDatabase(root / "state.db") as database:
+                    old = database.start_process_run(source, destination)
+                    metadata = {"title": "Recovered", "authors": ["Example Author"],
+                                "_verified_output": True, "_approved_source_selection": selection}
+                    database.store_detected_book(run_id=old, book_id="old", state="identified",
+                        source_fingerprint="unchanged", classification="convert_single", files=["part.mp3"], evidence=[])
+                    database.store_book_identification(run_id=old, book_id="old", state="complete",
+                        metadata=metadata, candidates=[], evidence=[], confidence=1)
+                    database.update_book_state(old, "old", "complete", output_path=str(output))
+                    database.update_process_run(old, "complete")
+                    new = database.start_process_run(source, destination)
+                    database.store_detected_book(run_id=new, book_id="new", state="identified",
+                        source_fingerprint="unchanged", classification="convert_single", files=["part.mp3"], evidence=[])
+                    with patch("audiobook_manager.executor._existing_output_is_compatible",
+                               return_value=(False, "invalid output")):
+                        result = reuse_verified_output(database, run_id=new, book_id="new",
+                            source_fingerprint="unchanged", source=source, destination=destination,
+                            files=["part.mp3"], known_files=["part.mp3", "../outside.mp3", "/outside.mp3"])
+                    self.assertIsNone(result)
+                    self.assertEqual("identified", database.process_books(new)[0]["state"])
+
     def test_local_metadata_keeps_unmatched_book_available_for_review(self) -> None:
         metadata = _local_metadata({"title": "Unlisted Book", "authors": ["Local Author"],
                                     "series": "Local Series", "series_position": "2"})

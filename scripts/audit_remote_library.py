@@ -83,10 +83,14 @@ def normalized(value: object) -> str:
     return " ".join(re.findall(r"[^\W_]+", text, flags=re.UNICODE))
 
 
-def title_aliases(value: object) -> set[str]:
+def title_aliases(value: object, *, series: str | None = None) -> set[str]:
+    """Retain full titles; remove collection prefixes only from supplied evidence."""
     name = normalized(value)
     aliases = {name} if name else set()
-    aliases.add(re.sub(r"^(?:star wars|the) ", "", name))
+    aliases.add(re.sub(r"^the ", "", name))
+    series_key = normalized(series) if series else ""
+    if series_key and name.startswith(series_key + " "):
+        aliases.add(name[len(series_key) + 1:])
     aliases.add(re.sub(r"\b(?:unabridged|graphic audio|dramatized adaptation)\b", "", name).strip())
     return {item for item in aliases if len(item) >= 3}
 
@@ -125,8 +129,12 @@ def active_outputs(root: Path) -> list[dict[str, Any]]:
             continue
         relative = path.relative_to(root).as_posix()
         name = path.stem.split(" - ", 1)[-1]
-        titles = title_aliases(name) | title_aliases(path.parent.name)
+        parts = path.relative_to(root).parts
+        # Canonical output layout is author / optional series / book / audio.
+        series = parts[1] if len(parts) == 4 else None
+        titles = title_aliases(name, series=series) | title_aliases(path.parent.name, series=series)
         outputs.append({"path": relative, "titles": sorted(titles),
+                        "series": normalized(series) if series else None,
                         "author": normalized(relative.split("/", 1)[0])})
     return outputs
 
@@ -145,14 +153,18 @@ def name_for(group: Any) -> tuple[str, str]:
     return str(title), str(byline)
 
 
-def classify(title: str, author: str, outputs: list[dict[str, Any]]) -> tuple[str, list[str]]:
-    aliases = title_aliases(title)
+def classify(title: str, author: str, outputs: list[dict[str, Any]], *,
+             series: str | None = None) -> tuple[str, list[str]]:
+    aliases = title_aliases(title, series=series)
     if not aliases:
         return "review_identity", []
     author_key = normalized(author)
     exact = [item for item in outputs if aliases.intersection(item["titles"])]
     if exact:
-        same_author = [item for item in exact if author_key and item["author"] and (
+        series_key = normalized(series) if series else ""
+        same_author = [item for item in exact if (
+            not series_key or not item.get("series") or series_key == item["series"]
+        ) and author_key and item["author"] and (
             item["author"] == author_key or author_key in item["author"] or
             item["author"] in author_key)]
         if same_author:
@@ -201,8 +213,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     books: list[dict[str, Any]] = []
     for group in detect_books(scanned):
         title, author = name_for(group)
-        classification, matches = classify(title, author, outputs)
+        series_names = {
+            str(value).strip() for file in group.files if file.probe
+            for key in ("series", "grouping")
+            if (value := file.probe.tags.get(key)) and str(value).strip()
+        }
+        series = next(iter(series_names)) if len(series_names) == 1 else None
+        classification, matches = classify(title, author, outputs, series=series)
+        if len({normalized(name) for name in series_names}) > 1:
+            classification = "review_identity"
         books.append({"book_key": group.key, "title": title, "author": author,
+                      "series": series, "series_evidence": sorted(series_names),
+                      "title_aliases": sorted(title_aliases(title, series=series)),
                       "classification": classification,
                       "source_files": [file.relative_path.as_posix() for file in group.files],
                       "source_fingerprints": [
